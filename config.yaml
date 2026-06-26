@@ -1,0 +1,40 @@
+# QQuant 配置文件
+# Token 不在此处填写，从环境变量 TUSHARE_TOKEN 读取
+
+tushare:
+  token: ""  # 留空，系统从 os.environ["TUSHARE_TOKEN"] 读取
+
+data:
+  db_path: "data/database.sqlite"
+  start_date: "20150101"
+  end_date: ""  # 空字符串表示今天
+  api_sleep: 0.35  # 每次 API 调用后的等待秒数（控制频率）
+
+universe:
+  min_volume_20d: 50000000   # 近20日平均成交额最低值（元），5000万
+  min_listed_days: 365        # 上市天数最低要求
+
+strategy:
+  ma_fast: 20          # 快线均线周期
+  ma_slow: 60          # 慢线均线周期
+  breakout_window: 20  # 突破窗口（N日最高价）
+  stop_loss_pct: 0.07  # 固定止损：亏损7%离场
+  take_profit_pct: 0.15  # 盈利超过此比例后启动移动止损
+  index_code: "399300.SZ"   # 大盘参考指数：沪深300
+  index_ma: 20              # 大盘均线周期
+
+risk:
+  max_position_pct: 0.15       # 单票最大仓位（账户总值的15%）
+  max_risk_per_trade: 0.01     # 单笔最大账户风险（1%）
+  max_total_exposure: 0.60     # 总仓位上限（60%）
+  max_sector_pct: 0.30         # 同行业持仓上限（30%）
+  max_drawdown_pause: 0.10     # 最大回撤暂停线（10%）
+  max_daily_loss: 0.02         # 单日最大亏损（2%）
+  consecutive_loss_halve: 3    # 连续亏损N笔后新开仓减半
+
+backtest:
+  commission: 0.00025   # 双向佣金（万2.5）
+  stamp_duty: 0.001     # 印花税（千1，仅卖出）
+  slippage: 0.002       # 滑点（0.2%，模拟冲击成本）
+  top_n_signals: 15     # 每日最多买入候选数量
+  min_history_days: 120 # 计算指标所需最少历史日数

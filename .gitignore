@@ -1,0 +1,42 @@
+# Data (large files, sensitive)
+data/raw/
+data/processed/
+data/database.sqlite
+data/*.sqlite
+data/*.sqlite-journal
+data/*.sqlite-wal
+data/*.sqlite-shm
+
+# Credentials
+.env
+*.token
+
+# Logs
+logs/
+
+# Reports (generated)
+reports/daily/
+reports/backtests/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
