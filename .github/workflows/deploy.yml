@@ -1,0 +1,58 @@
+name: Deploy
+
+# 仅在打 v* 形式的 tag 时触发（如 v1.0、v1.2.3）
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  # ── 部署前再跑一遍测试作为闸门 ──────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      - name: Run unit tests
+        run: pytest tests/ -v --tb=short
+        env:
+          TUSHARE_TOKEN: "ci-placeholder-token"
+
+  # ── 部署：需 test 通过 + production 环境人工批准 ──────────────
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    # 在仓库 Settings → Environments → production 配置 Required reviewers，
+    # 即可让此步骤暂停等待人工点确认后再执行。
+    environment: production
+    steps:
+      - name: SSH 部署到服务器
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
+          # github.ref_name 即触发本次部署的 tag 名
+          script: |
+            set -euo pipefail
+            DIR="/opt/qquant"
+            TAG="${{ github.ref_name }}"
+            cd "$DIR"
+
+            echo ">>> 拉取并切换到 ${TAG}"
+            git fetch --tags --prune origin
+            git checkout --force "${TAG}"
+
+            echo ">>> 同步依赖"
+            .venv/bin/pip install -r requirements.txt
+
+            echo ">>> 冒烟验证（不依赖数据库）"
+            .venv/bin/python -c "from src.config import load_config; load_config(); print('config OK')"
+
+            chmod +x "$DIR"/deploy/*.sh
+            echo ">>> 部署完成: $(git describe --tags --always)"

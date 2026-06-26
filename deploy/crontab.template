@@ -1,0 +1,25 @@
+# QQuant 自动化交易系统 —— cron 定时任务
+#
+# 安装前请先将服务器时区设为上海（setup.sh 已自动执行）：
+#   timedatectl set-timezone Asia/Shanghai
+#   date   # 确认输出为 CST
+#
+# 安装：
+#   crontab /opt/qquant/deploy/crontab.template
+#   crontab -l   # 验证
+#
+# 日志位于 /opt/qquant/logs/，每个任务以 SUCCESS / FAILURE 结尾。
+
+SHELL=/bin/bash
+
+# 每日 09:00 — 增量下载前一交易日数据（幂等，约 5 分钟）
+0 9 * * 1-5 /opt/qquant/deploy/run_job.sh download
+
+# 每日 09:20 — 数据质量检查
+20 9 * * 1-5 /opt/qquant/deploy/run_job.sh validate
+
+# 每日 15:30 — 盘后生成选股信号报告（收盘 15:00 后）
+30 15 * * 1-5 /opt/qquant/deploy/run_job.sh daily_report
+
+# 每周日 02:00 — 清理 30 天前的日志
+0 2 * * 0 find /opt/qquant/logs -name "*.log" -mtime +30 -delete

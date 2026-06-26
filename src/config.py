@@ -1,8 +1,12 @@
 import os
 import yaml
 from pathlib import Path
+from dotenv import load_dotenv
 
 _ROOT = Path(__file__).parent.parent
+
+# 显式加载仓库根目录的 .env，使脚本在 cron 等非交互环境下也能读到 TUSHARE_TOKEN
+load_dotenv(_ROOT / ".env")
 
 
 def load_config(path: str | None = None) -> dict:
