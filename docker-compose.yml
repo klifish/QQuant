@@ -1,0 +1,17 @@
+services:
+  qquant:
+    build: .
+    image: qquant:latest
+    # TUSHARE_TOKEN 等从 .env 注入为环境变量（.env 留在宿主机，不进镜像）
+    env_file: .env
+    environment:
+      # 让容器内 datetime.now() 也按北京时间，确保报告日期正确
+      - TZ=Asia/Shanghai
+    volumes:
+      # bind mount：DB / 报告 / 日志全部落在宿主机 ./data 等目录，
+      # 容器重建或代码更新都不影响这些数据
+      - ./data:/app/data
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+    # 无 ports、无 restart：这是按需运行的批处理服务，
+    # 调用方式为 docker compose run --rm qquant python scripts/xxx.py

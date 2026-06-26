@@ -48,11 +48,12 @@ jobs:
             git fetch --tags --prune origin
             git checkout --force "${TAG}"
 
-            echo ">>> 同步依赖"
-            .venv/bin/pip install -r requirements.txt
+            echo ">>> 重建镜像（requirements 不变时大部分层走缓存）"
+            docker compose build
 
             echo ">>> 冒烟验证（不依赖数据库）"
-            .venv/bin/python -c "from src.config import load_config; load_config(); print('config OK')"
+            docker compose run --rm qquant \
+              python -c "from src.config import load_config; load_config(); print('config OK')"
 
             chmod +x "$DIR"/deploy/*.sh
-            echo ">>> 部署完成: $(git describe --tags --always)"
+            echo ">>> 部署完成: $(git describe --tags --always)，下次 cron 即用新镜像"

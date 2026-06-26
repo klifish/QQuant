@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# QQuant 服务器一键初始化脚本
-# 在全新的阿里云 ECS / 腾讯云 CVM（Ubuntu 22.04）上以 root 运行。
+# QQuant 服务器一键初始化脚本（Docker 版）
+# 在公用服务器（Ubuntu 22.04）上以 root 运行。
 #
 # 用法：
 #   bash deploy/setup.sh
@@ -15,18 +15,28 @@ set -euo pipefail
 INSTALL_DIR="/opt/qquant"
 REPO_URL="https://github.com/klifish/QQuant.git"
 
-echo "=== [1/6] 设置时区为 Asia/Shanghai ==="
-timedatectl set-timezone Asia/Shanghai || true
+# 不修改整机时区（公用服务器）。容器内时区由 docker-compose 的 TZ 控制，
+# cron 触发时间由 crontab 里的 CRON_TZ 控制，均不影响宿主机其他程序。
 
-echo "=== [2/6] 安装 Python 3.11 与编译依赖 ==="
-apt-get update -y
-apt-get install -y --no-install-recommends software-properties-common
-add-apt-repository -y ppa:deadsnakes/ppa
-apt-get update -y
-apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv python3.11-dev gcc git curl
+echo "=== [1/5] 安装 Docker Engine ==="
+if ! command -v docker >/dev/null 2>&1; then
+    apt-get update -y
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg git
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        > /etc/apt/sources.list.d/docker.list
+    apt-get update -y
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    systemctl enable docker && systemctl start docker
+else
+    echo "Docker 已安装，跳过"
+fi
 
-echo "=== [3/6] 克隆仓库 ==="
+echo "=== [2/5] 克隆仓库 ==="
 if [ -d "${INSTALL_DIR}/.git" ]; then
     echo "仓库已存在，拉取最新代码..."
     git -C "${INSTALL_DIR}" pull --ff-only
@@ -34,18 +44,11 @@ else
     git clone "${REPO_URL}" "${INSTALL_DIR}"
 fi
 
-echo "=== [4/6] 创建虚拟环境并安装依赖 ==="
+echo "=== [3/5] 创建运行时目录（bind mount 挂载点）==="
 cd "${INSTALL_DIR}"
-if [ ! -d ".venv" ]; then
-    python3.11 -m venv .venv
-fi
-.venv/bin/pip install --upgrade pip
-.venv/bin/pip install -r requirements.txt
-
-echo "=== [5/6] 创建运行时目录 ==="
 mkdir -p data logs reports/daily reports/backtests
 
-echo "=== [6/6] 生成 .env 模板 ==="
+echo "=== [4/5] 生成 .env 模板 ==="
 if [ ! -f .env ]; then
     echo "TUSHARE_TOKEN=REPLACE_WITH_YOUR_TOKEN" > .env
     chmod 600 .env
@@ -54,6 +57,8 @@ else
     echo ">>> .env 已存在，跳过"
 fi
 
+echo "=== [5/5] 构建 Docker 镜像 ==="
+docker compose build --pull
 chmod +x "${INSTALL_DIR}"/deploy/*.sh
 
 echo ""
@@ -63,8 +68,8 @@ echo "================================================================"
 echo " 1. 填入 token:   nano ${INSTALL_DIR}/.env"
 echo " 2. 准备数据库（二选一）："
 echo "    A) 本地上传:  scp data/database.sqlite root@<本机IP>:${INSTALL_DIR}/data/"
-echo "    B) 全量下载:  cd ${INSTALL_DIR} && .venv/bin/python scripts/download_data.py"
-echo " 3. 验证数据:     cd ${INSTALL_DIR} && .venv/bin/python scripts/validate_data.py"
+echo "    B) 全量下载:  cd ${INSTALL_DIR} && docker compose run --rm qquant python scripts/download_data.py"
+echo " 3. 验证数据:     cd ${INSTALL_DIR} && docker compose run --rm qquant python scripts/validate_data.py"
 echo " 4. 安装定时任务: crontab ${INSTALL_DIR}/deploy/crontab.template"
 echo " 5. 手动测试:     ${INSTALL_DIR}/deploy/run_job.sh daily_report"
 echo "================================================================"

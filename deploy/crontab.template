@@ -1,16 +1,16 @@
 # QQuant 自动化交易系统 —— cron 定时任务
 #
-# 安装前请先将服务器时区设为上海（setup.sh 已自动执行）：
-#   timedatectl set-timezone Asia/Shanghai
-#   date   # 确认输出为 CST
-#
 # 安装：
 #   crontab /opt/qquant/deploy/crontab.template
 #   crontab -l   # 验证
 #
 # 日志位于 /opt/qquant/logs/，每个任务以 SUCCESS / FAILURE 结尾。
+#
+# CRON_TZ 只影响本 crontab 的时间解释，不改动整机时区——
+# 适合公用服务器，下面的时间即按北京时间执行。
 
 SHELL=/bin/bash
+CRON_TZ=Asia/Shanghai
 
 # 每日 09:00 — 增量下载前一交易日数据（幂等，约 5 分钟）
 0 9 * * 1-5 /opt/qquant/deploy/run_job.sh download

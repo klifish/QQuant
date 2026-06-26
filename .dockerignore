@@ -1,0 +1,33 @@
+# 绝不进镜像的敏感/数据文件
+.env
+*.token
+
+# 数据与生成物：运行时通过 bind mount 挂载
+data/
+reports/daily/
+reports/backtests/
+logs/
+
+# Python 产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# 开发/文档
+notebooks/
+.ipynb_checkpoints/
+trading_system_plan.md
+Roadmap.md
+
+# Git / IDE / OS
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.DS_Store

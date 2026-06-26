@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# QQuant 定时任务统一入口，由 cron 调用。
+# QQuant 定时任务统一入口，由 cron 调用（Docker 版）。
 # 用法: run_job.sh <download|validate|daily_report>
 #
-# 退出码: 0 成功 / 非0 失败（cron 会记录到 syslog）
+# 每次启动一个临时容器跑完即退。退出码: 0 成功 / 非0 失败。
 
 set -uo pipefail
 
 JOB="${1:-}"
 DIR="/opt/qquant"
-PY="${DIR}/.venv/bin/python"
 LOG_DIR="${DIR}/logs"
-TS=$(date +%Y%m%d_%H%M)
+TS=$(TZ=Asia/Shanghai date +%Y%m%d_%H%M)
 mkdir -p "${LOG_DIR}"
 
 case "${JOB}" in
@@ -24,23 +23,23 @@ case "${JOB}" in
 esac
 
 LOG="${LOG_DIR}/${JOB}_${TS}.log"
-echo "=== ${JOB} 开始 $(date '+%F %T') ===" | tee "${LOG}"
+NOW() { TZ=Asia/Shanghai date '+%F %T'; }
+echo "=== ${JOB} 开始 $(NOW) ===" | tee "${LOG}"
 
-# 关键：cd 到 /opt/qquant —— config.py 的 db_path 与 daily_report.py 的
-# reports/daily/ 均锚定仓库根目录。
-cd "${DIR}"
-${PY} ${CMD} >> "${LOG}" 2>&1
+# -f 指定 compose 文件，使 cron 无论 cwd 在哪都能正确解析 bind mount 相对路径
+docker compose -f "${DIR}/docker-compose.yml" run --rm qquant \
+    python ${CMD} >> "${LOG}" 2>&1
 CODE=$?
 
 if [ ${CODE} -eq 0 ]; then
-  echo "=== SUCCESS $(date '+%F %T') ===" | tee -a "${LOG}"
+  echo "=== SUCCESS $(NOW) ===" | tee -a "${LOG}"
 else
-  echo "=== FAILURE 退出码 ${CODE} $(date '+%F %T') ===" | tee -a "${LOG}"
+  echo "=== FAILURE 退出码 ${CODE} $(NOW) ===" | tee -a "${LOG}"
   # 可选告警：取消注释，并在 .env 配置 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
   # set -a; source "${DIR}/.env"; set +a
   # curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
   #   -d "chat_id=${TELEGRAM_CHAT_ID}" \
-  #   -d "text=QQuant ${JOB} 失败 (退出码 ${CODE}) $(date '+%F %T')"
+  #   -d "text=QQuant ${JOB} 失败 (退出码 ${CODE}) $(NOW)"
 fi
 
 exit ${CODE}
