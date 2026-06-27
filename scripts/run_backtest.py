@@ -38,7 +38,9 @@ def print_metrics(metrics: dict) -> None:
     }
     for key, label in labels.items():
         val = metrics.get(key, "N/A")
-        if isinstance(val, float) and key not in ("sharpe_ratio", "calmar_ratio", "profit_factor"):
+        if isinstance(val, float) and key not in (
+            "sharpe_ratio", "calmar_ratio", "profit_factor", "avg_holding_days"
+        ):
             val = f"{val:.2%}"
         logger.info(f"  {label}: {val}")
 
@@ -62,6 +64,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     logger.info(f"开始回测：{args.start} ~ {args.end}，初始资金：{args.cash:,.0f}")
+    bt_cfg = cfg.get("backtest", {})
     results = run_backtest(
         conn=conn,
         start=args.start,
@@ -69,8 +72,10 @@ if __name__ == "__main__":
         initial_cash=args.cash,
         **{k: v for k, v in cfg.get("strategy", {}).items()
            if k in ("ma_fast", "ma_slow", "breakout_window", "stop_loss_pct", "take_profit_pct")},
-        **{k: v for k, v in cfg.get("backtest", {}).items()
-           if k in ("commission", "stamp_duty", "slippage", "top_n_signals")},
+        commission=bt_cfg.get("commission", 0.00025),
+        stamp_duty=bt_cfg.get("stamp_duty", 0.001),
+        slippage=bt_cfg.get("slippage", 0.002),
+        top_n=bt_cfg.get("top_n_signals", 15),
     )
 
     if not results:

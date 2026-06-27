@@ -13,6 +13,7 @@
   - 含已退市股票，防止幸存者偏差
 """
 
+import gc
 import sqlite3
 from typing import Optional
 
@@ -118,6 +119,57 @@ def _load_all_price_data(
     return price_data, index_df
 
 
+# ---------------------------------------------------------------------------
+# 分段加载（控制峰值内存）：按年加载，统一前复权基准跨段不变
+# ---------------------------------------------------------------------------
+
+def _load_base_factors(conn: sqlite3.Connection, end: str) -> dict[str, float]:
+    """
+    取每只股票在全局 end（含之前最后一个交易日）的复权因子，作为前复权基准。
+
+    全量加载时 apply_qfq 以「窗口内最后一行」为基准；分段加载若每段各自取基准，
+    会导致跨段价格水平跳变、持仓盈亏错乱。这里预先算出全局统一基准，
+    使任意分段加载得到的前复权价与全量加载完全一致。
+    """
+    rows = conn.execute(
+        "SELECT ts_code, adj_factor FROM stock_daily WHERE trade_date <= ? "
+        "GROUP BY ts_code HAVING trade_date = MAX(trade_date)",
+        (end,),
+    ).fetchall()
+    return {code: (f if f else 1.0) for code, f in rows}
+
+
+def _apply_qfq_base(g: pd.DataFrame, base_factor: float) -> pd.DataFrame:
+    """用给定的全局基准因子做前复权（adj_close = close × base_factor / 当日因子）。"""
+    g = g.sort_values("trade_date").reset_index(drop=True)
+    if base_factor and "adj_factor" in g.columns and not g["adj_factor"].isna().all():
+        ratio = base_factor / g["adj_factor"]
+        for raw in ("open", "high", "low", "close"):
+            g[f"{raw}_qfq"] = (g[raw] * ratio).round(4)
+    else:
+        for raw in ("open", "high", "low", "close"):
+            g[f"{raw}_qfq"] = g[raw]
+    return g
+
+
+def _load_chunk_price_data(
+    conn: sqlite3.Connection,
+    load_start: str,
+    chunk_end: str,
+    base_factors: dict[str, float],
+) -> dict[str, pd.DataFrame]:
+    """加载 [load_start, chunk_end] 区间全市场日线，用全局基准前复权。"""
+    stock_df = pd.read_sql(
+        "SELECT * FROM stock_daily WHERE trade_date>=? AND trade_date<=? "
+        "ORDER BY ts_code, trade_date",
+        conn, params=[load_start, chunk_end],
+    )
+    price_data: dict[str, pd.DataFrame] = {}
+    for code, g in stock_df.groupby("ts_code"):
+        price_data[code] = _apply_qfq_base(g, base_factors.get(code, 1.0))
+    return price_data
+
+
 def run_backtest(
     conn: sqlite3.Connection,
     start: str = "20160101",
@@ -169,27 +221,32 @@ def run_backtest(
 
     logger.info(f"共 {len(trade_dates)} 个交易日")
 
-    # 预加载全量数据
-    logger.info("加载历史数据...")
-    price_data, index_df = _load_all_price_data(conn, start, end)
+    # 全市场交易日历（用于计算分段预热的回看起点）
+    all_cal = pd.read_sql(
+        "SELECT cal_date FROM trade_cal WHERE exchange='SSE' AND is_open=1 ORDER BY cal_date",
+        conn
+    )["cal_date"].tolist()
+    cal_idx = {d: i for i, d in enumerate(all_cal)}
+    warmup = max(ma_slow, breakout_window, 20) + 60   # 指标预热所需回看交易日数
+
+    # 全程不变的小数据：股票基础信息 + 全局前复权基准（保证分段价格与全量一致）
     basic_df = pd.read_sql(
         "SELECT ts_code, name, industry, list_date FROM stock_basic", conn
     )
+    base_factors = _load_base_factors(conn, end)
 
-    # 计算指标（按股票预计算）
-    logger.info("计算技术指标...")
-    for code, df in price_data.items():
-        try:
-            price_data[code] = calc_all_indicators(
-                df, index_df,
-                ma_windows=(10, ma_fast, ma_slow),
-                breakout_window=breakout_window,
-            )
-        except Exception as e:
-            logger.debug(f"{code} 指标计算失败: {e}")
-
-    # 指数均线过滤序列
+    # 指数：从首段预热起点加载到 end，保证均线序列有效
+    first_load_start = all_cal[max(0, cal_idx.get(trade_dates[0], 0) - warmup)]
+    index_df = pd.read_sql(
+        "SELECT * FROM index_daily WHERE ts_code='399300.SZ' "
+        "AND trade_date>=? AND trade_date<=? ORDER BY trade_date",
+        conn, params=[first_load_start, end],
+    )
     idx_above = index_above_ma(index_df, ma_window=ma_fast)
+
+    # 分段加载：按自然年分块，仅跨年时重载，峰值内存 ≈ 单年体量
+    price_data: dict[str, pd.DataFrame] = {}
+    loaded_year: Optional[str] = None
 
     portfolio = Portfolio(initial_cash=initial_cash)
     risk_cfg = RiskConfig(
@@ -202,6 +259,26 @@ def run_backtest(
     for i, date in enumerate(trade_dates):
         if i % 50 == 0:
             logger.debug(f"进度：{date} ({i}/{len(trade_dates)})")
+
+        # 跨年时重载该年数据（含预热回看）并释放上一年，控制峰值内存
+        year = date[:4]
+        if year != loaded_year:
+            price_data.clear()
+            gc.collect()
+            load_start = all_cal[max(0, cal_idx.get(date, 0) - warmup)]
+            chunk_end = min(f"{year}1231", end)
+            logger.info(f"加载 {year} 年数据（预热自 {load_start}）...")
+            price_data = _load_chunk_price_data(conn, load_start, chunk_end, base_factors)
+            for code, df in price_data.items():
+                try:
+                    price_data[code] = calc_all_indicators(
+                        df, index_df,
+                        ma_windows=(10, ma_fast, ma_slow),
+                        breakout_window=breakout_window,
+                    )
+                except Exception as e:
+                    logger.debug(f"{code} 指标计算失败: {e}")
+            loaded_year = year
 
         # 上一个交易日（用于 T+1 成交）
         prev_date = trade_dates[i - 1] if i > 0 else None
