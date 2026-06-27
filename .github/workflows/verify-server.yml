@@ -1,0 +1,36 @@
+name: Verify Server Connection
+
+# 手动触发：在 GitHub 仓库 Actions 页点 "Run workflow" 即可。
+# 用于验证 server 环境里配置的 HOST/USER/PORT/SSH_KEY 是否正确、
+# GitHub Actions 能否 SSH 登录服务器。不依赖服务器是否已 setup。
+on:
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    environment: server
+    steps:
+      - name: SSH 连通性自检
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ vars.SERVER_HOST }}
+          username: ${{ vars.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ vars.SERVER_PORT }}
+          script: |
+            echo "✅ SSH 连接成功"
+            echo "登录用户: $(whoami)"
+            echo "主机名:   $(hostname)"
+            echo "系统:     $(uname -srm)"
+            echo "----- 部署就绪度检查 -----"
+            if command -v docker >/dev/null 2>&1; then
+              echo "✅ Docker 已安装: $(docker --version)"
+            else
+              echo "ℹ️  Docker 尚未安装 —— 需在服务器跑一次 deploy/setup.sh"
+            fi
+            if [ -d /opt/qquant ]; then
+              echo "✅ /opt/qquant 已存在"
+            else
+              echo "ℹ️  /opt/qquant 尚未创建 —— 需在服务器跑一次 deploy/setup.sh"
+            fi

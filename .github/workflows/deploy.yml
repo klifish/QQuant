@@ -22,21 +22,23 @@ jobs:
         env:
           TUSHARE_TOKEN: "ci-placeholder-token"
 
-  # ── 部署：需 test 通过 + production 环境人工批准 ──────────────
+  # ── 部署：需 test 通过 + server 环境人工批准 ──────────────
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    # 在仓库 Settings → Environments → production 配置 Required reviewers，
-    # 即可让此步骤暂停等待人工点确认后再执行。
-    environment: production
+    # 对应 Settings → Environments → server（在那里配 Required reviewers
+    # 即可让此步骤暂停等待人工点确认后再执行）。
+    environment: server
     steps:
       - name: SSH 部署到服务器
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
+          # HOST/USER/PORT 存为 Environment variables，用 vars 读取；
+          # 仅私钥是 secret，用 secrets 读取
+          host: ${{ vars.SERVER_HOST }}
+          username: ${{ vars.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          port: ${{ secrets.SERVER_PORT }}
+          port: ${{ vars.SERVER_PORT }}
           # github.ref_name 即触发本次部署的 tag 名
           script: |
             set -euo pipefail
