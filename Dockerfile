@@ -24,6 +24,7 @@ RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
 # 仅拷贝源码；data/ logs/ reports/ .env 由 .dockerignore 排除，运行时挂载进来
 COPY src/ src/
 COPY scripts/ scripts/
+COPY dashboard/ dashboard/
 COPY config.yaml .
 
 # 运行时目录（实际内容来自宿主机 bind mount）
