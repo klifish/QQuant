@@ -24,8 +24,9 @@ def apply_qfq(df: pd.DataFrame) -> pd.DataFrame:
     对单只股票的日线 DataFrame 做前复权。
 
     前复权逻辑：
-      adj_close = close × (最新复权因子 / 当日复权因子)
-    以最新一天的复权因子为基准（= 1.0），历史价格向前调整。
+      adj_close = close × (当日复权因子 / 最新复权因子)
+    以最新一天的复权因子为基准（最新日 ratio=1，qfq=原始价），历史价格向前缩放，
+    确保跨送转/分红时价格连续——切勿写反，否则跨除权持仓会凭空产生巨亏/巨盈。
 
     参数 df 需含列：open, high, low, close, pre_close, adj_factor
     返回新增 open_qfq, high_qfq, low_qfq, close_qfq 列的 DataFrame。
@@ -39,7 +40,7 @@ def apply_qfq(df: pd.DataFrame) -> pd.DataFrame:
     # 最新复权因子（按 trade_date 排序后取最后一行）
     df = df.sort_values("trade_date")
     latest_factor = df["adj_factor"].iloc[-1]
-    ratio = latest_factor / df["adj_factor"]
+    ratio = df["adj_factor"] / latest_factor
 
     for raw_col in ("open", "high", "low", "close"):
         df[f"{raw_col}_qfq"] = (df[raw_col] * ratio).round(4)

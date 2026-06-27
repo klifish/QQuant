@@ -6,8 +6,45 @@ import pytest
 
 from src.indicators import (
     calc_ma, calc_ma_slope, calc_breakout,
-    calc_volume_ratio, calc_relative_strength, index_above_ma,
+    calc_volume_ratio, calc_relative_strength, index_above_ma, calc_atr,
 )
+from src.data_cleaner import apply_qfq
+from src.backtester import _apply_qfq_base
+
+
+class TestQfqAdjustment:
+    """前复权方向回归测试：跨送转/分红时 qfq 必须连续，切勿把公式写反。"""
+
+    def _split_df(self):
+        # 2:1 拆股：原始 close 30→15，adj_factor 1.0→2.0，真实收益为 0（仅拆股）
+        return pd.DataFrame({
+            "trade_date": ["20230101", "20230102", "20230103"],
+            "open": [30.0, 15.0, 15.3], "high": [30.0, 15.0, 15.3],
+            "low": [30.0, 15.0, 15.3], "close": [30.0, 15.0, 15.0],
+            "pre_close": [29.0, 30.0, 15.0], "adj_factor": [1.0, 2.0, 2.0],
+        })
+
+    def test_apply_qfq_continuous_across_split(self):
+        out = apply_qfq(self._split_df())
+        # 拆股前后 qfq 连续：30(adj1) 与 15(adj2) 前复权后相等
+        assert out["close_qfq"].iloc[0] == pytest.approx(out["close_qfq"].iloc[1], rel=1e-6)
+        # 最新日 qfq == 原始价
+        assert out["close_qfq"].iloc[-1] == pytest.approx(15.0, rel=1e-6)
+
+    def test_apply_qfq_constant_factor_equals_raw(self):
+        df = pd.DataFrame({
+            "trade_date": ["20230101", "20230102"],
+            "open": [10.0, 11.0], "high": [10.0, 11.0], "low": [10.0, 11.0],
+            "close": [10.0, 11.0], "pre_close": [9.0, 10.0], "adj_factor": [5.0, 5.0],
+        })
+        out = apply_qfq(df)
+        assert out["close_qfq"].tolist() == [10.0, 11.0]
+
+    def test_apply_qfq_base_continuous_across_split(self):
+        # _apply_qfq_base 用全局 base_factor=最新因子(2.0)
+        out = _apply_qfq_base(self._split_df(), base_factor=2.0)
+        assert out["close_qfq"].iloc[0] == pytest.approx(out["close_qfq"].iloc[1], rel=1e-6)
+        assert out["close_qfq"].iloc[-1] == pytest.approx(15.0, rel=1e-6)
 
 
 def make_price_df(n=100, start_price=10.0, trend=0.001):
@@ -42,6 +79,34 @@ class TestCalcMA:
         result = calc_ma(df, [5])
         manual = df["close_qfq"].rolling(5).mean().iloc[29]
         assert abs(result["ma5"].iloc[29] - manual) < 1e-6
+
+
+class TestCalcATR:
+    def test_atr_column_and_warmup(self):
+        df = make_price_df(40)
+        result = calc_atr(df, window=14)
+        assert "atr14" in result.columns
+        # 前13行（不足窗口）应为 NaN，之后有效
+        assert result["atr14"].iloc[:13].isna().all()
+        assert not result["atr14"].iloc[14:].isna().any()
+
+    def test_atr_positive(self):
+        df = make_price_df(40)
+        result = calc_atr(df, window=14)
+        assert (result["atr14"].dropna() > 0).all()
+
+    def test_atr_value(self):
+        # 构造已知 TR：high-low 恒为 2，且无跳空，则 ATR≈2
+        n = 20
+        dates = pd.date_range("20200101", periods=n, freq="B").strftime("%Y%m%d").tolist()
+        close = [100.0] * n
+        df = pd.DataFrame({
+            "trade_date": dates,
+            "high_qfq": [101.0] * n, "low_qfq": [99.0] * n, "close_qfq": close,
+            "high": [101.0] * n, "low": [99.0] * n, "close": close,
+        })
+        result = calc_atr(df, window=5)
+        assert result["atr5"].iloc[-1] == pytest.approx(2.0, abs=1e-6)
 
 
 class TestMaSlope:

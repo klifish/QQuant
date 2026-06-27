@@ -50,6 +50,9 @@ def generate_buy_signals(
     ma_slow: int = 60,
     ma_fast: int = 20,
     breakout_window: int = 20,
+    require_ma_align: bool = False,
+    min_rel_strength: float | None = None,
+    max_ext_above_ma: float | None = None,
 ) -> pd.DataFrame:
     """
     生成指定日期的买入候选列表。
@@ -61,6 +64,11 @@ def generate_buy_signals(
         index_above_ma  : 大盘是否在均线上方（布尔）
         ma_slow/fast    : 均线周期
         breakout_window : 突破窗口
+
+    入场质量门槛（默认关闭/宽松，保持原行为；回撤优先时开启以剔除弱势/高风险交易）：
+        require_ma_align : 要求 ma_fast > ma_slow（确立的上升趋势）
+        min_rel_strength : 相对强度硬门槛，rel_strength_{w}d 须 > 此值（跑赢指数）
+        max_ext_above_ma : 不追过度延伸，(close − ma_fast)/ma_fast 超过此值则剔除
 
     返回：
         DataFrame，列：ts_code, close_qfq, ma{fast}, ma{slow},
@@ -102,6 +110,21 @@ def generate_buy_signals(
         vol_ratio = r.get(f"vol_ratio_{breakout_window}d", 0)
         if pd.isna(vol_ratio) or vol_ratio <= 1.0:
             continue
+
+        # === 入场质量门槛（阶段2，默认关闭）===
+        # 门槛1：趋势对齐 ma_fast > ma_slow
+        if require_ma_align and r[f"ma{ma_fast}"] <= r[f"ma{ma_slow}"]:
+            continue
+        rs_val = r.get(f"rel_strength_{breakout_window}d")
+        # 门槛2：相对强度硬门槛（跑赢指数）
+        if min_rel_strength is not None and (pd.isna(rs_val) or rs_val <= min_rel_strength):
+            continue
+        # 门槛3：不追过度延伸（离快线太远，R:R 差、反转回撤大）
+        if max_ext_above_ma is not None:
+            ma_fast_val = r[f"ma{ma_fast}"]
+            ext = (r["close_qfq"] - ma_fast_val) / ma_fast_val if ma_fast_val else 0
+            if ext > max_ext_above_ma:
+                continue
 
         candidates.append({
             "ts_code": code,

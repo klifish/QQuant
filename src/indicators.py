@@ -38,6 +38,32 @@ def calc_ma_slope(df: pd.DataFrame, ma_col: str = "ma20") -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# 平均真实波幅 ATR
+# ---------------------------------------------------------------------------
+
+def calc_atr(df: pd.DataFrame, window: int = 14) -> pd.DataFrame:
+    """
+    平均真实波幅 ATR，使用前复权 high/low/close。
+
+    TR = max(high − low, |high − prev_close|, |low − prev_close|)
+    ATR = TR 的 N 日均值（SMA，稳健且无未来函数）。
+    新增列：atr{window}
+    """
+    df = df.copy()
+    high = df["high_qfq"] if "high_qfq" in df.columns else df["high"]
+    low = df["low_qfq"] if "low_qfq" in df.columns else df["low"]
+    close = df["close_qfq"] if "close_qfq" in df.columns else df["close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    df[f"atr{window}"] = tr.rolling(window, min_periods=window).mean()
+    return df
+
+
+# ---------------------------------------------------------------------------
 # 突破信号
 # ---------------------------------------------------------------------------
 
@@ -134,6 +160,7 @@ def calc_all_indicators(
     breakout_window: int = 20,
     vol_window: int = 20,
     rs_window: int = 20,
+    atr_window: int = 14,
 ) -> pd.DataFrame:
     """
     对单只股票 DataFrame 计算全部指标，返回增强后的 DataFrame。
@@ -143,4 +170,5 @@ def calc_all_indicators(
     df = calc_breakout(df, breakout_window)
     df = calc_volume_ratio(df, vol_window)
     df = calc_relative_strength(df, index_df, rs_window)
+    df = calc_atr(df, atr_window)
     return df

@@ -87,11 +87,26 @@ def calc_stop_price(
     entry_price: float,
     ma20: float,
     stop_loss_pct: float = 0.07,
+    atr: float | None = None,
+    atr_mult: float = 2.5,
+    min_stop_pct: float = 0.04,
+    max_stop_pct: float = 0.15,
 ) -> float:
     """
-    止损价 = max(entry × (1 - stop_loss_pct), ma20 × 0.99)
-    取更高的那个，保护更严格。
+    止损价计算。
+
+    有 ATR 时（推荐，回撤优先）：
+        止损距离 = atr_mult × ATR，夹在 [min_stop_pct, max_stop_pct] × entry 之间。
+        波动大的票止损更宽（减少假止损后反转），但仓位法按更大止损距离自动缩小持仓，
+        单笔账户风险恒定；波动小的票止损更紧。趋势破坏（跌破 MA20）由出场信号单独处理。
+
+    无 ATR 时：回退旧逻辑 max(固定 % 止损, 趋势均线止损)，取更严格者。
     """
+    if atr is not None and not pd.isna(atr) and atr > 0:
+        dist = atr_mult * atr
+        dist = min(max(dist, entry_price * min_stop_pct), entry_price * max_stop_pct)
+        return round(entry_price - dist, 4)
+
     fixed_stop = entry_price * (1 - stop_loss_pct)
     ma_stop = ma20 * 0.99
     return round(max(fixed_stop, ma_stop), 4)

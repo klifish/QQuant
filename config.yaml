@@ -22,6 +22,8 @@ strategy:
   take_profit_pct: 0.15  # 盈利超过此比例后启动移动止损
   index_code: "399300.SZ"   # 大盘参考指数：沪深300
   index_ma: 60              # 大盘均线周期
+  atr_window: 14            # ATR 周期
+  atr_mult: 2.5             # ATR 止损倍数（止损距离 = atr_mult×ATR，回撤优先自适应）
 
 risk:
   max_position_pct: 0.08       # 单票最大仓位（账户总值的8%）

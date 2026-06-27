@@ -4,6 +4,61 @@ import pandas as pd
 import pytest
 
 from src.signal_ranker import rank_signals
+from src.signal_engine import generate_buy_signals
+
+
+def _stock_row(close, ma20, ma60, rs, ma20_up=True, breakout=True, vol_ratio=1.5):
+    """构造单只股票在 date 当日的一行（含买入信号所需指标列）。"""
+    return pd.DataFrame({
+        "trade_date": ["20230101"],
+        "close_qfq": [close],
+        "ma20": [ma20], "ma60": [ma60], "ma20_up": [ma20_up],
+        "breakout_20d": [breakout],
+        "vol_ratio_20d": [vol_ratio],
+        "rel_strength_20d": [rs],
+    })
+
+
+class TestEntryGates:
+    """阶段2 入场质量门槛。基础5条均满足，仅验证新增门槛的剔除行为。"""
+
+    def _universe(self):
+        # A: 全合格；B: ma20<ma60（趋势未对齐）；C: rs<0（弱于指数）；D: 过度延伸
+        return {
+            "A": _stock_row(close=11.0, ma20=10.0, ma60=9.0, rs=5.0),
+            "B": _stock_row(close=11.0, ma20=9.0,  ma60=10.0, rs=5.0),
+            "C": _stock_row(close=11.0, ma20=10.0, ma60=9.0, rs=-2.0),
+            "D": _stock_row(close=13.0, ma20=10.0, ma60=9.0, rs=5.0),  # ext=30%
+        }
+
+    def _codes(self):
+        return ["A", "B", "C", "D"]
+
+    def test_gates_off_keeps_all(self):
+        res = generate_buy_signals("20230101", self._codes(), self._universe(),
+                                   index_above_ma=True)
+        assert set(res["ts_code"]) == {"A", "B", "C", "D"}
+
+    def test_ma_align_gate(self):
+        res = generate_buy_signals("20230101", self._codes(), self._universe(),
+                                   index_above_ma=True, require_ma_align=True)
+        assert "B" not in set(res["ts_code"])
+        assert {"A", "C", "D"}.issubset(set(res["ts_code"]))
+
+    def test_rel_strength_gate(self):
+        res = generate_buy_signals("20230101", self._codes(), self._universe(),
+                                   index_above_ma=True, min_rel_strength=0.0)
+        assert "C" not in set(res["ts_code"])
+
+    def test_extension_gate(self):
+        res = generate_buy_signals("20230101", self._codes(), self._universe(),
+                                   index_above_ma=True, max_ext_above_ma=0.15)
+        assert "D" not in set(res["ts_code"])
+
+    def test_index_below_ma_blocks_all(self):
+        res = generate_buy_signals("20230101", self._codes(), self._universe(),
+                                   index_above_ma=False)
+        assert res.empty
 
 
 class TestRankSignals:

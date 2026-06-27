@@ -24,9 +24,10 @@ from loguru import logger
 try:
     import vectorbt as vbt
     HAS_VBT = True
-except ImportError:
+except Exception as e:
+    vbt = None
     HAS_VBT = False
-    logger.warning("vectorbt 未安装，回测功能不可用。运行 pip install vectorbt")
+    logger.warning(f"vectorbt 不可用，validate_framework 功能禁用：{e}")
 
 from src.data_cleaner import apply_qfq
 from src.indicators import calc_all_indicators, index_above_ma
@@ -201,10 +202,14 @@ def _load_base_factors(conn: sqlite3.Connection, end: str) -> dict[str, float]:
 
 
 def _apply_qfq_base(g: pd.DataFrame, base_factor: float) -> pd.DataFrame:
-    """用给定的全局基准因子做前复权（adj_close = close × base_factor / 当日因子）。"""
+    """用给定的全局基准因子做前复权（adj_close = close × 当日因子 / base_factor）。
+
+    前复权以最新交易日为锚（base_factor=最新 adj_factor）：最新日 qfq=原始价，
+    历史价按 adj_factor/base 缩放，确保跨送转/分红时价格连续（不会凭空跳变）。
+    """
     g = g.sort_values("trade_date").reset_index(drop=True)
     if base_factor and "adj_factor" in g.columns and not g["adj_factor"].isna().all():
-        ratio = base_factor / g["adj_factor"]
+        ratio = g["adj_factor"] / base_factor
         for raw in ("open", "high", "low", "close"):
             g[f"{raw}_qfq"] = (g[raw] * ratio).round(4)
     else:
@@ -256,6 +261,12 @@ def run_backtest(
     consecutive_loss_halve: int = 3,
     min_volume_20d: float = 50_000_000,
     min_listed_days: int = 365,
+    atr_window: int = 14,
+    atr_mult: float = 2.5,
+    use_atr_stop: bool = True,
+    require_ma_align: bool = False,
+    min_rel_strength: float | None = None,
+    max_ext_above_ma: float | None = None,
 ) -> dict:
     """
     事件驱动逐日回测。
@@ -359,6 +370,7 @@ def run_backtest(
                         breakout_window=breakout_window,
                         vol_window=breakout_window,
                         rs_window=breakout_window,
+                        atr_window=atr_window,
                     ))
                 except Exception as e:
                     logger.debug(f"{code} 指标计算失败: {e}")
@@ -484,6 +496,9 @@ def run_backtest(
                     index_above_ma=bool(idx_val),
                     ma_slow=ma_slow, ma_fast=ma_fast,
                     breakout_window=breakout_window,
+                    require_ma_align=require_ma_align,
+                    min_rel_strength=min_rel_strength,
+                    max_ext_above_ma=max_ext_above_ma,
                 )
                 if not candidates.empty:
                     ranked = rank_signals(
@@ -517,7 +532,11 @@ def run_backtest(
                 open_price = r.get("open_qfq", r.get("open"))
                 exec_price = open_price * (1 + slippage)
                 ma20_val = r.get(f"ma{ma_fast}", exec_price * 0.93)
-                stop_price = calc_stop_price(exec_price, ma20_val, stop_loss_pct)
+                atr_val = r.get(f"atr{atr_window}") if use_atr_stop else None
+                stop_price = calc_stop_price(
+                    exec_price, ma20_val, stop_loss_pct,
+                    atr=atr_val, atr_mult=atr_mult,
+                )
 
                 # 策略降仓时减半
                 risk_multiplier = 0.5 if state == StrategyState.HALF else 1.0
@@ -674,7 +693,111 @@ _MARKET_PERIODS = {
     "2021分化": ("20210101", "20220101"),
     "2022熊市": ("20220101", "20230101"),
     "2023震荡": ("20230101", "20240101"),
+    "2024震荡": ("20240101", "20250101"),
+    "2025至今": ("20250101", "20251231"),
 }
+
+
+def _exit_reason_category(reason: str) -> str:
+    """把退出原因归并为大类，便于统计分布。"""
+    r = str(reason)
+    if r.startswith("止损"):
+        return "止损"
+    if r.startswith("盈利后跌破"):
+        return "移动止盈"
+    if "跌破" in r:
+        return "趋势破坏"
+    if "退市" in r:
+        return "退市强平"
+    return "其他"
+
+
+def calc_diagnostics(
+    equity_curve: pd.DataFrame,
+    trade_log: pd.DataFrame,
+    initial_cash: float,
+    cost_per_turn: float = 0.0095,
+    annual_trading_days: int = 252,
+) -> dict:
+    """
+    诊断口径：聚焦"为什么死/活"的可执行指标，补 calc_metrics 之外的视角。
+
+    返回：
+      expectancy        — 单笔扣费后平均收益率（pnl_pct 均值，已含卖出侧成本）
+      turnover_annual   — 年化换手率（买入名义额 / 平均权益 / 年数）
+      cost_drag_annual  — 估算的年化成本拖累（换手 × 双向成本率）
+      avg_exposure      — 平均总仓位
+      avg_holding_count — 平均持仓只数（部署率参考）
+      exit_breakdown    — 退出原因大类占比 dict
+      by_year           — 分年 DataFrame：交易数/胜率/单笔期望
+    """
+    diag: dict = {}
+    if equity_curve.empty:
+        return diag
+
+    n_days = len(equity_curve)
+    years = max(n_days / annual_trading_days, 1e-9)
+    avg_equity = equity_curve["total_equity"].mean()
+    diag["avg_exposure"] = round(equity_curve.get("total_exposure", pd.Series([0])).mean(), 4)
+    diag["avg_holding_count"] = round(equity_curve.get("holding_count", pd.Series([0])).mean(), 2)
+
+    if trade_log.empty:
+        diag["expectancy"] = 0.0
+        diag["turnover_annual"] = 0.0
+        diag["cost_drag_annual"] = 0.0
+        diag["exit_breakdown"] = {}
+        diag["by_year"] = pd.DataFrame()
+        return diag
+
+    tl = trade_log.copy()
+    diag["expectancy"] = round(tl["pnl_pct"].mean(), 4)
+
+    # 换手与成本拖累：以买入名义额近似单边换手
+    buy_notional = (tl["entry_price"] * tl["shares"]).sum()
+    turnover_annual = buy_notional / avg_equity / years if avg_equity > 0 else 0
+    diag["turnover_annual"] = round(turnover_annual, 2)
+    diag["cost_drag_annual"] = round(turnover_annual * cost_per_turn, 4)
+
+    cat = tl["exit_reason"].map(_exit_reason_category)
+    diag["exit_breakdown"] = {
+        k: round(v, 3) for k, v in cat.value_counts(normalize=True).items()
+    }
+
+    tl["yr"] = tl["entry_date"].astype(str).str[:4]
+    by_year = tl.groupby("yr").apply(
+        lambda g: pd.Series({
+            "交易数": len(g),
+            "胜率": round((g["pnl_pct"] > 0).mean(), 3),
+            "单笔期望": round(g["pnl_pct"].mean(), 4),
+        }),
+        include_groups=False,
+    ).reset_index()
+    diag["by_year"] = by_year
+
+    return diag
+
+
+def format_diagnostics(diag: dict) -> str:
+    """把 calc_diagnostics 的结果格式化为可读文本块。"""
+    if not diag:
+        return "（无诊断数据）"
+    lines = [
+        f"  单笔扣费后期望: {diag.get('expectancy', 0):+.2%}",
+        f"  年化换手率:     {diag.get('turnover_annual', 0):.2f}",
+        f"  估算年化成本拖累: {diag.get('cost_drag_annual', 0):.2%}",
+        f"  平均总仓位:     {diag.get('avg_exposure', 0):.1%}",
+        f"  平均持仓只数:   {diag.get('avg_holding_count', 0):.1f}",
+        f"  退出原因占比:   {diag.get('exit_breakdown', {})}",
+    ]
+    by_year = diag.get("by_year")
+    if by_year is not None and not by_year.empty:
+        lines.append("  分年表现:")
+        for _, r in by_year.iterrows():
+            lines.append(
+                f"    {r['yr']}: {int(r['交易数']):3d} 笔 | "
+                f"胜率 {r['胜率']:.0%} | 期望 {r['单笔期望']:+.2%}"
+            )
+    return "\n".join(lines)
 
 
 def segment_report(

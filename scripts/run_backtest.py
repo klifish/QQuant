@@ -75,7 +75,9 @@ if __name__ == "__main__":
         **{k: v for k, v in cfg.get("strategy", {}).items()
            if k in (
                "ma_fast", "ma_slow", "breakout_window", "index_ma",
-               "stop_loss_pct", "take_profit_pct",
+               "stop_loss_pct", "take_profit_pct", "atr_window", "atr_mult",
+               "use_atr_stop", "require_ma_align", "min_rel_strength",
+               "max_ext_above_ma",
            )},
         commission=bt_cfg.get("commission", 0.00025),
         stamp_duty=bt_cfg.get("stamp_duty", 0.001),
