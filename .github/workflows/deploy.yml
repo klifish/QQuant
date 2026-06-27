@@ -1,10 +1,11 @@
 name: Deploy
 
-# 仅在打 v* 形式的 tag 时触发（如 v1.0、v1.2.3）
+# 打 v* tag 自动触发（如 v1.0），或在 Actions 页手动 Run workflow
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 jobs:
   # ── 部署前再跑一遍测试作为闸门 ──────────────────────────────
