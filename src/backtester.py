@@ -34,6 +34,67 @@ from src.signal_engine import generate_buy_signals, generate_sell_signals
 from src.signal_ranker import rank_signals
 
 
+def _index_by_trade_date(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep trade_date as a column and also index by it for fast daily lookup."""
+    if df.empty or "trade_date" not in df.columns:
+        return df
+    return df.set_index("trade_date", drop=False)
+
+
+def _row_on_date(
+    price_data: dict[str, pd.DataFrame],
+    code: str,
+    date: str,
+) -> Optional[pd.Series]:
+    df = price_data.get(code)
+    if df is None or df.empty:
+        return None
+    if df.index.name == "trade_date":
+        if date not in df.index:
+            return None
+        row = df.loc[date]
+        return row.iloc[0] if isinstance(row, pd.DataFrame) else row
+
+    row = df[df["trade_date"] == date]
+    if row.empty:
+        return None
+    return row.iloc[0]
+
+
+def _last_close_on_or_before(
+    price_data: dict[str, pd.DataFrame],
+    code: str,
+    date: str,
+    price_col: str = "close_qfq",
+) -> Optional[float]:
+    """持仓估值用价：取 date 当日或之前最近一个交易日的收盘价。
+
+    停牌当天该股无 K 线（Tushare 日线对停牌日不返回行），此时不能按当日缺失
+    处理为成本价，而应沿用最近一个有效交易日的收盘价冻结估值，避免停牌期间
+    权益曲线被错误拉回成本价、复牌时跳变，污染回撤/夏普。
+    price_data[code] 已按 trade_date 升序排列。
+    """
+    df = price_data.get(code)
+    if df is None or df.empty:
+        return None
+
+    if df.index.name == "trade_date":
+        pos = df.index.searchsorted(date, side="right") - 1
+        if pos < 0:
+            return None
+        r = df.iloc[pos]
+    else:
+        rows = df[df["trade_date"] <= date]
+        if rows.empty:
+            return None
+        r = rows.iloc[-1]
+
+    price = r.get(price_col, r.get(price_col.replace("_qfq", "")))
+    if pd.isna(price):
+        return None
+    return float(price)
+
+
 # ---------------------------------------------------------------------------
 # 框架验证：双均线策略（用于确认 vectorbt 配置正确）
 # ---------------------------------------------------------------------------
@@ -178,6 +239,7 @@ def run_backtest(
     ma_fast: int = 20,
     ma_slow: int = 60,
     breakout_window: int = 20,
+    index_ma: int = 20,
     stop_loss_pct: float = 0.07,
     take_profit_pct: float = 0.15,
     commission: float = 0.00025,
@@ -187,6 +249,11 @@ def run_backtest(
     max_position_pct: float = 0.15,
     max_risk_per_trade: float = 0.01,
     max_total_exposure: float = 0.60,
+    max_sector_pct: float = 0.30,
+    max_drawdown_pause: float = 0.10,
+    drawdown_pause_days: int = 60,
+    max_daily_loss: float = 0.02,
+    consecutive_loss_halve: int = 3,
     min_volume_20d: float = 50_000_000,
     min_listed_days: int = 365,
 ) -> dict:
@@ -231,8 +298,15 @@ def run_backtest(
 
     # 全程不变的小数据：股票基础信息 + 全局前复权基准（保证分段价格与全量一致）
     basic_df = pd.read_sql(
-        "SELECT ts_code, name, industry, list_date FROM stock_basic", conn
+        "SELECT ts_code, name, industry, list_date, delist_date FROM stock_basic", conn
     )
+    basic_by_code = basic_df.set_index("ts_code").to_dict("index")
+    # 退市日映射：到退市日仍持有的标的需强制平仓（退市后再无 K 线，否则仓位卡死）
+    delist_map = {
+        r["ts_code"]: str(r["delist_date"]).strip()
+        for _, r in basic_df.iterrows()
+        if pd.notna(r.get("delist_date")) and str(r.get("delist_date")).strip()
+    }
     base_factors = _load_base_factors(conn, end)
 
     # 指数：从首段预热起点加载到 end，保证均线序列有效
@@ -242,7 +316,7 @@ def run_backtest(
         "AND trade_date>=? AND trade_date<=? ORDER BY trade_date",
         conn, params=[first_load_start, end],
     )
-    idx_above = index_above_ma(index_df, ma_window=ma_fast)
+    idx_above = index_above_ma(index_df, ma_window=index_ma)
 
     # 分段加载：按自然年分块，仅跨年时重载，峰值内存 ≈ 单年体量
     price_data: dict[str, pd.DataFrame] = {}
@@ -253,7 +327,15 @@ def run_backtest(
         max_position_pct=max_position_pct,
         max_risk_per_trade=max_risk_per_trade,
         max_total_exposure=max_total_exposure,
+        max_sector_pct=max_sector_pct,
+        max_drawdown_pause=max_drawdown_pause,
+        drawdown_pause_days=drawdown_pause_days,
+        max_daily_loss=max_daily_loss,
+        consecutive_loss_halve=consecutive_loss_halve,
     )
+
+    drawdown_pause_until_idx = -1
+    drawdown_pause_armed = True
 
     logger.info("开始逐日模拟...")
     for i, date in enumerate(trade_dates):
@@ -271,11 +353,13 @@ def run_backtest(
             price_data = _load_chunk_price_data(conn, load_start, chunk_end, base_factors)
             for code, df in price_data.items():
                 try:
-                    price_data[code] = calc_all_indicators(
+                    price_data[code] = _index_by_trade_date(calc_all_indicators(
                         df, index_df,
                         ma_windows=(10, ma_fast, ma_slow),
                         breakout_window=breakout_window,
-                    )
+                        vol_window=breakout_window,
+                        rs_window=breakout_window,
+                    ))
                 except Exception as e:
                     logger.debug(f"{code} 指标计算失败: {e}")
             loaded_year = year
@@ -287,10 +371,9 @@ def run_backtest(
         if prev_date and hasattr(portfolio, "_pending_sells"):
             for sell in portfolio._pending_sells:
                 code = sell["ts_code"]
-                df = price_data.get(code, pd.DataFrame())
-                today_row = df[df["trade_date"] == date] if not df.empty else pd.DataFrame()
-                if not today_row.empty:
-                    open_price = today_row.iloc[0].get("open_qfq", today_row.iloc[0].get("open"))
+                r = _row_on_date(price_data, code, date)
+                if r is not None:
+                    open_price = r.get("open_qfq", r.get("open"))
                     exec_price = open_price * (1 - slippage)
                     portfolio.close_position(
                         ts_code=code,
@@ -300,6 +383,26 @@ def run_backtest(
                         commission_rate=commission,
                         stamp_duty_rate=stamp_duty,
                     )
+
+        # === 退市强平：到退市日仍持有的，按最后有效收盘价强制平仓 ===
+        # 退市后该股再无 K 线，普通卖出信号永远取不到行而跳过，会导致仓位卡死、
+        # 现金不回笼、净值虚高。这里在退市日（或之后首个交易日）强制了结。
+        for code in list(portfolio.positions.keys()):
+            dl = delist_map.get(code)
+            if dl and date >= dl:
+                last_close = _last_close_on_or_before(price_data, code, date)
+                exit_price = (
+                    last_close if last_close is not None
+                    else portfolio.positions[code].entry_price
+                )
+                portfolio.close_position(
+                    ts_code=code,
+                    exit_date=date,
+                    exit_price=exit_price,
+                    exit_reason="退市强平",
+                    commission_rate=commission,
+                    stamp_duty_rate=stamp_duty,
+                )
 
         # === 卖出信号生成（当日收盘后） ===
         current_positions = [
@@ -316,17 +419,58 @@ def run_backtest(
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
         )
-        # 更新 max_profit_pct
-        for sig in sell_signals:
-            code = sig["ts_code"]
+        # generate_sell_signals 会更新传入持仓 dict 的 max_profit_pct；
+        # 无论是否触发卖出，都要写回组合，保证移动止盈用的是历史最大浮盈。
+        for pos_info in current_positions:
+            code = pos_info["ts_code"]
             if code in portfolio.positions:
-                portfolio.positions[code].max_profit_pct = sig.get("max_profit_pct", 0)
+                portfolio.positions[code].max_profit_pct = pos_info.get("max_profit_pct", 0)
         portfolio._pending_sells = sell_signals
 
         # === 策略状态检查 ===
         trade_df = portfolio.get_trade_df()
         snap_df = portfolio.get_snapshot_df()
-        state = get_strategy_state(trade_df, snap_df, risk_cfg)
+        state = get_strategy_state(trade_df, snap_df, risk_cfg, check_drawdown=False)
+
+        if not snap_df.empty:
+            equity = snap_df["total_equity"]
+            peak = equity.cummax().iloc[-1]
+            current_drawdown = (equity.iloc[-1] - peak) / peak if peak > 0 else 0
+
+            if current_drawdown > -risk_cfg.max_drawdown_pause * 0.5:
+                drawdown_pause_armed = True
+
+            if (
+                drawdown_pause_armed
+                and current_drawdown <= -risk_cfg.max_drawdown_pause
+            ):
+                drawdown_pause_until_idx = i + risk_cfg.drawdown_pause_days
+                drawdown_pause_armed = False
+                logger.warning(
+                    f"当前回撤 {current_drawdown:.1%}，暂停开仓 "
+                    f"{risk_cfg.drawdown_pause_days} 个交易日"
+                )
+
+        if i <= drawdown_pause_until_idx:
+            state = StrategyState.PAUSED
+
+        # === 单日亏损熔断：当日浮动亏损超限则今日不再开仓 ===
+        # 以"当日盯市权益 vs 昨日收盘权益"的跌幅近似当日亏损。
+        if state != StrategyState.PAUSED and not snap_df.empty:
+            prev_equity = snap_df["total_equity"].iloc[-1]
+            cur_equity = portfolio.cash + sum(
+                pos.market_value(
+                    _last_close_on_or_before(price_data, c, date) or pos.entry_price
+                )
+                for c, pos in portfolio.positions.items()
+            )
+            if prev_equity > 0 and check_daily_loss(
+                (cur_equity - prev_equity) / prev_equity, risk_cfg
+            ):
+                logger.warning(
+                    f"{date} 当日亏损超 {risk_cfg.max_daily_loss:.0%}，今日暂停开仓"
+                )
+                state = StrategyState.PAUSED
 
         # === 买入信号生成（当日收盘后，T+1 成交） ===
         if state != StrategyState.PAUSED:
@@ -342,7 +486,12 @@ def run_backtest(
                     breakout_window=breakout_window,
                 )
                 if not candidates.empty:
-                    ranked = rank_signals(candidates, top_n=top_n)
+                    ranked = rank_signals(
+                        candidates,
+                        top_n=top_n,
+                        rs_window=breakout_window,
+                        vol_window=breakout_window,
+                    )
                     portfolio._pending_buys = ranked.to_dict("records")
                 else:
                     portfolio._pending_buys = []
@@ -357,12 +506,10 @@ def run_backtest(
                 code = sig["ts_code"]
                 if code in portfolio.positions:
                     continue  # 已持仓跳过
-                df = price_data.get(code, pd.DataFrame())
-                today_row = df[df["trade_date"] == date] if not df.empty else pd.DataFrame()
-                if today_row.empty:
+                r = _row_on_date(price_data, code, date)
+                if r is None:
                     continue
 
-                r = today_row.iloc[0]
                 # 涨停时不买入（无法成交）
                 if r.get("is_limit_up", 0):
                     continue
@@ -373,24 +520,28 @@ def run_backtest(
                 stop_price = calc_stop_price(exec_price, ma20_val, stop_loss_pct)
 
                 # 策略降仓时减半
-                adj_risk = max_risk_per_trade * (0.5 if state == StrategyState.HALF else 1.0)
+                risk_multiplier = 0.5 if state == StrategyState.HALF else 1.0
                 sizing = calc_position_size(
                     portfolio.cash + sum(
-                        pos.market_value(exec_price) for pos in portfolio.positions.values()
+                        pos.market_value(_last_close_on_or_before(price_data, code, date) or pos.entry_price)
+                        for code, pos in portfolio.positions.items()
                     ),
                     exec_price, stop_price,
                     risk_cfg,
+                    risk_multiplier=risk_multiplier,
                 )
                 if sizing["shares"] <= 0:
                     continue
 
                 # 组合限制检查
-                basic_row = basic_df[basic_df["ts_code"] == code]
-                industry = basic_row.iloc[0]["industry"] if not basic_row.empty else ""
+                basic_info = basic_by_code.get(code, {})
+                industry = basic_info.get("industry", "")
                 current_pos_list = [
                     {
                         "ts_code": c,
-                        "market_value": pos.market_value(exec_price),
+                        "market_value": pos.market_value(
+                            _last_close_on_or_before(price_data, c, date) or pos.entry_price
+                        ),
                         "industry": pos.industry,
                     }
                     for c, pos in portfolio.positions.items()
@@ -404,7 +555,7 @@ def run_backtest(
                 if not allowed:
                     continue
 
-                name = basic_row.iloc[0]["name"] if not basic_row.empty else code
+                name = basic_info.get("name", code)
                 portfolio.open_position(
                     ts_code=code, name=name, industry=industry,
                     entry_date=date, entry_price=exec_price,
@@ -415,12 +566,13 @@ def run_backtest(
         portfolio._prev_buys = getattr(portfolio, "_pending_buys", [])
 
         # === 每日快照 ===
+        # 停牌日无当日 K 线时，沿用最近有效收盘价估值（而非回退成本价），
+        # 避免停牌期间权益曲线被错误拉回成本、复牌时跳变。
         price_map = {}
         for code in portfolio.positions:
-            df = price_data.get(code, pd.DataFrame())
-            row = df[df["trade_date"] == date] if not df.empty else pd.DataFrame()
-            if not row.empty:
-                price_map[code] = row.iloc[0].get("close_qfq", row.iloc[0].get("close"))
+            last_close = _last_close_on_or_before(price_data, code, date)
+            if last_close is not None:
+                price_map[code] = last_close
         portfolio.take_snapshot(date, price_map)
 
     logger.info("=== 回测完成 ===")
@@ -466,8 +618,11 @@ def calc_metrics(
     # 夏普比率（年化，无风险利率 2%）
     rf_daily = 0.02 / annual_trading_days
     excess = returns - rf_daily
-    sharpe = (excess.mean() / excess.std() * np.sqrt(annual_trading_days)
-               if excess.std() > 0 else 0)
+    excess_std = excess.std()
+    sharpe = (
+        excess.mean() / excess_std * np.sqrt(annual_trading_days)
+        if excess_std > 1e-12 else 0
+    )
 
     metrics: dict = {
         "total_return": round(total_return, 4),

@@ -22,6 +22,22 @@ import pandas as pd
 from loguru import logger
 
 
+def _row_on_date(df: pd.DataFrame, date: str) -> pd.Series | None:
+    """Fast date lookup; price frames may be indexed by trade_date."""
+    if df.empty:
+        return None
+    if df.index.name == "trade_date":
+        if date not in df.index:
+            return None
+        row = df.loc[date]
+        return row.iloc[0] if isinstance(row, pd.DataFrame) else row
+
+    row = df[df["trade_date"] == date]
+    if row.empty:
+        return None
+    return row.iloc[0]
+
+
 # ---------------------------------------------------------------------------
 # 买入信号
 # ---------------------------------------------------------------------------
@@ -60,10 +76,9 @@ def generate_buy_signals(
         if df is None or df.empty:
             continue
 
-        row = df[df["trade_date"] == date]
-        if row.empty:
+        r = _row_on_date(df, date)
+        if r is None:
             continue
-        r = row.iloc[0]
 
         # 检查必要列是否存在且有效
         needed = [
@@ -140,10 +155,9 @@ def generate_sell_signals(
         if df is None or df.empty:
             continue
 
-        row = df[df["trade_date"] == date]
-        if row.empty:
+        r = _row_on_date(df, date)
+        if r is None:
             continue
-        r = row.iloc[0]
 
         close = r.get("close_qfq", r.get("close"))
         if pd.isna(close):

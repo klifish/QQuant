@@ -42,6 +42,22 @@ class TestPositionSize:
         result = calc_position_size(100_000, 15.0, 14.0)
         assert result["shares"] % 100 == 0
 
+    def test_risk_multiplier_reduces_size(self):
+        normal = calc_position_size(
+            account_value=100_000,
+            entry_price=20.0,
+            stop_price=18.0,
+            cfg=RiskConfig(max_risk_per_trade=0.02, max_position_pct=1.0),
+        )
+        reduced = calc_position_size(
+            account_value=100_000,
+            entry_price=20.0,
+            stop_price=18.0,
+            cfg=RiskConfig(max_risk_per_trade=0.02, max_position_pct=1.0),
+            risk_multiplier=0.5,
+        )
+        assert reduced["shares"] == normal["shares"] / 2
+
 
 class TestStopPrice:
     def test_fixed_stop(self):
@@ -130,6 +146,32 @@ class TestStrategyState:
             cfg=RiskConfig(max_drawdown_pause=0.10)
         )
         assert state == StrategyState.PAUSED
+
+    def test_paused_on_total_equity_drawdown(self):
+        account = pd.DataFrame({"total_equity": [100_000, 95_000, 89_000]})
+        state = get_strategy_state(
+            pd.DataFrame({"pnl_pct": []}), account,
+            cfg=RiskConfig(max_drawdown_pause=0.10)
+        )
+        assert state == StrategyState.PAUSED
+
+    def test_drawdown_pause_overrides_consecutive_loss(self):
+        trade_log = pd.DataFrame({"pnl_pct": [-0.03, -0.05, -0.04]})
+        account = pd.DataFrame({"total_equity": [100_000, 89_000]})
+        state = get_strategy_state(
+            trade_log, account,
+            cfg=RiskConfig(max_drawdown_pause=0.10, consecutive_loss_halve=3)
+        )
+        assert state == StrategyState.PAUSED
+
+    def test_can_skip_drawdown_check(self):
+        account = pd.DataFrame({"total_equity": [100_000, 89_000]})
+        state = get_strategy_state(
+            pd.DataFrame({"pnl_pct": []}), account,
+            cfg=RiskConfig(max_drawdown_pause=0.10),
+            check_drawdown=False,
+        )
+        assert state == StrategyState.NORMAL
 
 
 class TestDailyLoss:

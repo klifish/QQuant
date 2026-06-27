@@ -22,6 +22,7 @@ class RiskConfig:
     max_total_exposure: float = 0.60     # 总仓位上限
     max_sector_pct: float = 0.30         # 同行业上限
     max_drawdown_pause: float = 0.10     # 最大回撤暂停线
+    drawdown_pause_days: int = 60        # 回撤触发后暂停开仓的交易日数
     max_daily_loss: float = 0.02         # 单日最大亏损
     consecutive_loss_halve: int = 3      # 连续亏损N笔后降仓
 
@@ -35,6 +36,7 @@ def calc_position_size(
     entry_price: float,
     stop_price: float,
     cfg: RiskConfig | None = None,
+    risk_multiplier: float = 1.0,
     lot_size: int = 100,
 ) -> dict:
     """
@@ -52,7 +54,8 @@ def calc_position_size(
     if entry_price <= stop_price:
         return {"shares": 0, "amount": 0, "position_pct": 0, "risk_amount": 0}
 
-    risk_amount = account_value * cfg.max_risk_per_trade
+    risk_multiplier = max(risk_multiplier, 0.0)
+    risk_amount = account_value * cfg.max_risk_per_trade * risk_multiplier
     risk_per_share = entry_price - stop_price
     raw_shares = risk_amount / risk_per_share
 
@@ -154,6 +157,7 @@ def get_strategy_state(
     trade_log: pd.DataFrame,
     account_history: pd.DataFrame,
     cfg: RiskConfig | None = None,
+    check_drawdown: bool = True,
 ) -> StrategyState:
     """
     根据交易记录和账户历史判断当前策略状态。
@@ -168,22 +172,28 @@ def get_strategy_state(
     if cfg is None:
         cfg = RiskConfig()
 
+    # 最大回撤是组合级风险，应优先于连续亏损降仓。
+    equity_col = None
+    for col in ("total_equity", "equity"):
+        if col in account_history.columns:
+            equity_col = col
+            break
+
+    if check_drawdown and not account_history.empty and equity_col:
+        equity = account_history[equity_col]
+        peak = equity.cummax()
+        drawdown = (equity - peak) / peak
+        current_dd = drawdown.iloc[-1]
+        if current_dd <= -cfg.max_drawdown_pause:
+            logger.warning(f"当前回撤 {current_dd:.1%}，暂停开仓")
+            return StrategyState.PAUSED
+
     # 连续亏损检查
     if not trade_log.empty:
         recent = trade_log["pnl_pct"].tail(cfg.consecutive_loss_halve)
         if len(recent) == cfg.consecutive_loss_halve and (recent < 0).all():
             logger.warning(f"连续 {cfg.consecutive_loss_halve} 笔亏损，降仓模式")
             return StrategyState.HALF
-
-    # 最大回撤检查
-    if not account_history.empty and "equity" in account_history.columns:
-        equity = account_history["equity"]
-        peak = equity.cummax()
-        drawdown = (equity - peak) / peak
-        max_dd = drawdown.min()
-        if max_dd <= -cfg.max_drawdown_pause:
-            logger.warning(f"最大回撤 {max_dd:.1%}，暂停开仓")
-            return StrategyState.PAUSED
 
     return StrategyState.NORMAL
 
