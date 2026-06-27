@@ -83,7 +83,11 @@ def mark_suspend(conn: sqlite3.Connection) -> int:
     用成交量推算停牌：vol = 0 视为停牌（无需 suspend_d 接口，仅需 120 积分）。
 
     注：Tushare daily 接口对全天停牌通常不返回数据行，所以缺失日期即停牌。
-    此函数捕捉"有价格记录但成交量为零"的部分停牌场景。
+    此函数本想捕捉"有价格记录但成交量为零"的部分停牌场景，但实测 Tushare
+    日线里 vol=0 / vol IS NULL 的行数为 0——停牌一律表现为整行缺失，从不出现
+    vol=0 的行。因此本函数恒命中 0 行、is_suspend 列实际恒为 0，仅作占位。
+    停牌在回测中由"当日无 K 线"分支处理（见 backtester._last_close_on_or_before
+    及买卖执行的缺行跳过逻辑），不依赖此列。
     """
     cursor = conn.execute(
         "UPDATE stock_daily SET is_suspend = 1 WHERE vol = 0 OR vol IS NULL"
