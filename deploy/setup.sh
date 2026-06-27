@@ -41,9 +41,8 @@ https://mirrors.aliyun.com/docker-ce/linux/ubuntu $(. /etc/os-release && echo "$
     cat > /etc/docker/daemon.json <<'JSON'
 {
   "registry-mirrors": [
-    "https://docker.m.daocloud.io",
-    "https://docker.1ms.run",
-    "https://hub-mirror.c.163.com"
+    "https://lvwlpca1.mirror.aliyuncs.com",
+    "https://docker.m.daocloud.io"
   ]
 }
 JSON
