@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM python:3.11-slim
+# 用 DaoCloud 代理拉基础镜像：国内服务器访问 Docker Hub 官方源超时，
+# 阿里云个人版加速器对公共镜像返回 not found；DaoCloud 代理可正常拉取。
+FROM docker.m.daocloud.io/library/python:3.11-slim
 
 # numpy/pandas 部分 C 扩展需要 gcc；vectorbt 运行期需要 libgomp1
 RUN apt-get update && apt-get install -y --no-install-recommends \
