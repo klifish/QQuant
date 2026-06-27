@@ -33,9 +33,23 @@ https://mirrors.aliyun.com/docker-ce/linux/ubuntu $(. /etc/os-release && echo "$
         > /etc/apt/sources.list.d/docker.list
     apt-get update -y
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-    systemctl enable docker && systemctl start docker
+
+    # 配置镜像加速器：国内服务器从 Docker Hub 拉基础镜像（python:3.11-slim）
+    # 常超时/被重置。以下为公共加速地址，时效性较强——
+    # 强烈建议替换为你的阿里云专属地址（控制台→容器镜像服务→镜像加速器，每账号免费）。
+    mkdir -p /etc/docker
+    cat > /etc/docker/daemon.json <<'JSON'
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://docker.1ms.run",
+    "https://hub-mirror.c.163.com"
+  ]
+}
+JSON
+    systemctl enable docker && systemctl restart docker
 else
-    echo "Docker 已安装，跳过"
+    echo "Docker 已安装，跳过（如拉基础镜像超时，请自行在 /etc/docker/daemon.json 配置 registry-mirrors）"
 fi
 
 echo "=== [2/5] 克隆仓库 ==="
@@ -60,7 +74,7 @@ else
 fi
 
 echo "=== [5/5] 构建 Docker 镜像 ==="
-docker compose build --pull
+docker compose build
 chmod +x "${INSTALL_DIR}"/deploy/*.sh
 
 echo ""
