@@ -1,0 +1,43 @@
+name: Bootstrap Server
+
+# 手动触发：在 GitHub 仓库 Actions 页点 "Run workflow"。
+# 一键完成服务器首次初始化：安装 git/Docker、克隆仓库、构建镜像。
+# 幂等：重复运行只会拉取最新代码并重建镜像，不会破坏已有数据。
+on:
+  workflow_dispatch:
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    environment: server
+    steps:
+      - name: 在服务器上初始化 QQuant
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ vars.SERVER_HOST }}
+          username: ${{ vars.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ vars.SERVER_PORT }}
+          # 装 Docker + 构建镜像（含 vectorbt）较耗时，放宽超时
+          command_timeout: 40m
+          script: |
+            set -euo pipefail
+
+            echo ">>> 确保 git 可用"
+            command -v git >/dev/null 2>&1 || { apt-get update -y && apt-get install -y git; }
+
+            echo ">>> 克隆 / 更新仓库到 /opt/qquant"
+            if [ -d /opt/qquant/.git ]; then
+              git -C /opt/qquant pull --ff-only
+            else
+              git clone https://github.com/klifish/QQuant.git /opt/qquant
+            fi
+
+            echo ">>> 执行 setup.sh（装 Docker + 建目录 + 生成 .env 模板 + 构建镜像）"
+            cd /opt/qquant
+            bash deploy/setup.sh
+
+            echo ">>> 初始化完成。当前状态："
+            docker --version
+            docker images qquant:latest --format '镜像: {{.Repository}}:{{.Tag}} {{.Size}}'
+            test -f .env && echo ".env 已存在（记得填入真实 TUSHARE_TOKEN）"
