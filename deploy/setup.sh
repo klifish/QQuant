@@ -13,8 +13,8 @@
 set -euo pipefail
 
 INSTALL_DIR="/opt/qquant"
-# 私有仓库：用 SSH 形式，配合服务器上的 Deploy Key 拉取
-REPO_URL="git@github.com:klifish/QQuant.git"
+# 公开仓库：https 直接拉取，无需任何认证
+REPO_URL="https://github.com/klifish/QQuant.git"
 
 # 不修改整机时区（公用服务器）。容器内时区由 docker-compose 的 TZ 控制，
 # cron 触发时间由 crontab 里的 CRON_TZ 控制，均不影响宿主机其他程序。
@@ -38,10 +38,6 @@ else
 fi
 
 echo "=== [2/5] 克隆仓库 ==="
-# 把 github.com 加入 known_hosts，避免首次连接卡在交互式确认
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
-ssh-keyscan -t rsa,ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
-sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts
 if [ -d "${INSTALL_DIR}/.git" ]; then
     echo "仓库已存在，拉取最新代码..."
     git -C "${INSTALL_DIR}" pull --ff-only
