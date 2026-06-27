@@ -9,8 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # 先装依赖：requirements.txt 不变时此层走缓存
+# 用阿里云 PyPI 镜像，国内服务器构建更快、更稳
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
+        -r requirements.txt
 
 # 仅拷贝源码；data/ logs/ reports/ .env 由 .dockerignore 排除，运行时挂载进来
 COPY src/ src/
