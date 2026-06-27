@@ -3,8 +3,13 @@
 # 阿里云个人版加速器对公共镜像返回 not found；DaoCloud 代理可正常拉取。
 FROM docker.m.daocloud.io/library/python:3.11-slim
 
-# numpy/pandas 部分 C 扩展需要 gcc；vectorbt 运行期需要 libgomp1
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# numpy/pandas 部分 C 扩展需要 gcc；vectorbt 运行期需要 libgomp1。
+# 先把 Debian 源换成阿里云镜像加速 apt（兼容 deb822 新格式与传统 sources.list）。
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
+        /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
+    sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
+        /etc/apt/sources.list 2>/dev/null || true; \
+    apt-get update && apt-get install -y --no-install-recommends \
         gcc libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
