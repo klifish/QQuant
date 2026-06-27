@@ -19,7 +19,7 @@ REPO_URL="https://github.com/klifish/QQuant.git"
 # 不修改整机时区（公用服务器）。容器内时区由 docker-compose 的 TZ 控制，
 # cron 触发时间由 crontab 里的 CRON_TZ 控制，均不影响宿主机其他程序。
 
-echo "=== [1/4] 安装 Docker Engine ==="
+echo "=== [1/5] 安装 Docker Engine ==="
 if ! command -v docker >/dev/null 2>&1; then
     apt-get update -y
     apt-get install -y --no-install-recommends ca-certificates curl gnupg git
@@ -51,7 +51,7 @@ else
     echo "Docker 已安装，跳过（如拉基础镜像超时，请自行在 /etc/docker/daemon.json 配置 registry-mirrors）"
 fi
 
-echo "=== [2/4] 克隆仓库 ==="
+echo "=== [2/5] 克隆仓库 ==="
 if [ -d "${INSTALL_DIR}/.git" ]; then
     echo "仓库已存在，拉取最新代码..."
     git -C "${INSTALL_DIR}" pull --ff-only
@@ -59,32 +59,32 @@ else
     git clone "${REPO_URL}" "${INSTALL_DIR}"
 fi
 
-echo "=== [3/4] 创建运行时目录（bind mount 挂载点）==="
+echo "=== [3/5] 创建运行时目录（bind mount 挂载点）==="
 cd "${INSTALL_DIR}"
 mkdir -p data logs reports/daily reports/backtests
 
-echo "=== [4/4] 生成 .env 模板 ==="
+echo "=== [4/5] 生成 .env 模板 ==="
 if [ ! -f .env ]; then
-    cat > .env <<'ENVEOF'
-TUSHARE_TOKEN=REPLACE_WITH_YOUR_TOKEN
-# ACR 镜像完整地址（由 GitHub Actions 推送），形如：
-# QQUANT_IMAGE=crpi-xxxx.cn-hangzhou.personal.cr.aliyuncs.com/<命名空间>/qquant:latest
-QQUANT_IMAGE=REPLACE_WITH_ACR_IMAGE
-ENVEOF
+    echo "TUSHARE_TOKEN=REPLACE_WITH_YOUR_TOKEN" > .env
     chmod 600 .env
-    echo ">>> 已创建 ${INSTALL_DIR}/.env —— 请编辑填入 TUSHARE_TOKEN 与 QQUANT_IMAGE"
+    echo ">>> 已创建 ${INSTALL_DIR}/.env —— 请编辑填入真实 token"
 else
     echo ">>> .env 已存在，跳过"
 fi
+
+echo "=== [5/5] 构建 Docker 镜像 ==="
+docker compose build
 chmod +x "${INSTALL_DIR}"/deploy/*.sh
 
 echo ""
 echo "================================================================"
-echo " 服务器初始化完成（镜像不在此构建，由 GitHub Actions 推送到 ACR）"
+echo " 初始化完成！下一步："
 echo "================================================================"
-echo " 1. 填配置:       nano ${INSTALL_DIR}/.env   # TUSHARE_TOKEN + QQUANT_IMAGE"
-echo " 2. 在 GitHub 触发 Build & Deploy，镜像构建后会自动推到 ACR 并在此拉取"
-echo " 3. 准备数据库:   cd ${INSTALL_DIR} && docker compose run --rm qquant python scripts/download_data.py"
-echo " 4. 验证数据:     docker compose run --rm qquant python scripts/validate_data.py"
-echo " 5. 安装定时任务: crontab ${INSTALL_DIR}/deploy/crontab.template"
+echo " 1. 填入 token:   nano ${INSTALL_DIR}/.env"
+echo " 2. 准备数据库（二选一）："
+echo "    A) 本地上传:  scp data/database.sqlite root@<本机IP>:${INSTALL_DIR}/data/"
+echo "    B) 全量下载:  cd ${INSTALL_DIR} && docker compose run --rm qquant python scripts/download_data.py"
+echo " 3. 验证数据:     cd ${INSTALL_DIR} && docker compose run --rm qquant python scripts/validate_data.py"
+echo " 4. 安装定时任务: crontab ${INSTALL_DIR}/deploy/crontab.template"
+echo " 5. 手动测试:     ${INSTALL_DIR}/deploy/run_job.sh daily_report"
 echo "================================================================"

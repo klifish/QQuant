@@ -1,10 +1,7 @@
 services:
   qquant:
-    # 镜像由 GitHub Actions 构建并推送到阿里云 ACR；
-    # 服务器通过 QQUANT_IMAGE（在 .env 中定义）指向 ACR 完整地址后 pull 使用。
-    # 本地开发时未设 QQUANT_IMAGE 则回退到 build 出的 qquant:latest。
-    image: ${QQUANT_IMAGE:-qquant:latest}
     build: .
+    image: qquant:latest
     # TUSHARE_TOKEN 等从 .env 注入为环境变量（.env 留在宿主机，不进镜像）
     env_file: .env
     environment:
@@ -16,5 +13,5 @@ services:
       - ./data:/app/data
       - ./reports:/app/reports
       - ./logs:/app/logs
-    # 无 ports、无 restart：按需运行的批处理服务，
+    # 无 ports、无 restart：这是按需运行的批处理服务，
     # 调用方式为 docker compose run --rm qquant python scripts/xxx.py
