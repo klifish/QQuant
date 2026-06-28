@@ -38,7 +38,9 @@ def print_metrics(metrics: dict) -> None:
     }
     for key, label in labels.items():
         val = metrics.get(key, "N/A")
-        if isinstance(val, float) and key not in ("sharpe_ratio", "calmar_ratio", "profit_factor"):
+        if isinstance(val, float) and key not in (
+            "sharpe_ratio", "calmar_ratio", "profit_factor", "avg_holding_days"
+        ):
             val = f"{val:.2%}"
         logger.info(f"  {label}: {val}")
 
@@ -62,15 +64,35 @@ if __name__ == "__main__":
         sys.exit(0)
 
     logger.info(f"开始回测：{args.start} ~ {args.end}，初始资金：{args.cash:,.0f}")
+    bt_cfg = cfg.get("backtest", {})
+    risk_cfg = cfg.get("risk", {})
+    universe_cfg = cfg.get("universe", {})
     results = run_backtest(
         conn=conn,
         start=args.start,
         end=args.end,
         initial_cash=args.cash,
         **{k: v for k, v in cfg.get("strategy", {}).items()
-           if k in ("ma_fast", "ma_slow", "breakout_window", "stop_loss_pct", "take_profit_pct")},
-        **{k: v for k, v in cfg.get("backtest", {}).items()
-           if k in ("commission", "stamp_duty", "slippage", "top_n_signals")},
+           if k in (
+               "ma_fast", "ma_slow", "breakout_window", "index_ma",
+               "stop_loss_pct", "take_profit_pct", "atr_window", "atr_mult",
+               "use_atr_stop", "require_ma_align", "min_rel_strength",
+               "max_ext_above_ma",
+           )},
+        commission=bt_cfg.get("commission", 0.00025),
+        stamp_duty=bt_cfg.get("stamp_duty", 0.001),
+        slippage=bt_cfg.get("slippage", 0.002),
+        top_n=bt_cfg.get("top_n_signals", 15),
+        max_position_pct=risk_cfg.get("max_position_pct", 0.15),
+        max_risk_per_trade=risk_cfg.get("max_risk_per_trade", 0.01),
+        max_total_exposure=risk_cfg.get("max_total_exposure", 0.60),
+        max_sector_pct=risk_cfg.get("max_sector_pct", 0.30),
+        max_drawdown_pause=risk_cfg.get("max_drawdown_pause", 0.10),
+        drawdown_pause_days=risk_cfg.get("drawdown_pause_days", 60),
+        max_daily_loss=risk_cfg.get("max_daily_loss", 0.02),
+        consecutive_loss_halve=risk_cfg.get("consecutive_loss_halve", 3),
+        min_volume_20d=universe_cfg.get("min_volume_20d", 50_000_000),
+        min_listed_days=universe_cfg.get("min_listed_days", 365),
     )
 
     if not results:

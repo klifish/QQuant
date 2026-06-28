@@ -22,6 +22,7 @@ class RiskConfig:
     max_total_exposure: float = 0.60     # 总仓位上限
     max_sector_pct: float = 0.30         # 同行业上限
     max_drawdown_pause: float = 0.10     # 最大回撤暂停线
+    drawdown_pause_days: int = 60        # 回撤触发后暂停开仓的交易日数
     max_daily_loss: float = 0.02         # 单日最大亏损
     consecutive_loss_halve: int = 3      # 连续亏损N笔后降仓
 
@@ -35,6 +36,7 @@ def calc_position_size(
     entry_price: float,
     stop_price: float,
     cfg: RiskConfig | None = None,
+    risk_multiplier: float = 1.0,
     lot_size: int = 100,
 ) -> dict:
     """
@@ -52,7 +54,8 @@ def calc_position_size(
     if entry_price <= stop_price:
         return {"shares": 0, "amount": 0, "position_pct": 0, "risk_amount": 0}
 
-    risk_amount = account_value * cfg.max_risk_per_trade
+    risk_multiplier = max(risk_multiplier, 0.0)
+    risk_amount = account_value * cfg.max_risk_per_trade * risk_multiplier
     risk_per_share = entry_price - stop_price
     raw_shares = risk_amount / risk_per_share
 
@@ -84,11 +87,26 @@ def calc_stop_price(
     entry_price: float,
     ma20: float,
     stop_loss_pct: float = 0.07,
+    atr: float | None = None,
+    atr_mult: float = 2.5,
+    min_stop_pct: float = 0.04,
+    max_stop_pct: float = 0.15,
 ) -> float:
     """
-    止损价 = max(entry × (1 - stop_loss_pct), ma20 × 0.99)
-    取更高的那个，保护更严格。
+    止损价计算。
+
+    有 ATR 时（推荐，回撤优先）：
+        止损距离 = atr_mult × ATR，夹在 [min_stop_pct, max_stop_pct] × entry 之间。
+        波动大的票止损更宽（减少假止损后反转），但仓位法按更大止损距离自动缩小持仓，
+        单笔账户风险恒定；波动小的票止损更紧。趋势破坏（跌破 MA20）由出场信号单独处理。
+
+    无 ATR 时：回退旧逻辑 max(固定 % 止损, 趋势均线止损)，取更严格者。
     """
+    if atr is not None and not pd.isna(atr) and atr > 0:
+        dist = atr_mult * atr
+        dist = min(max(dist, entry_price * min_stop_pct), entry_price * max_stop_pct)
+        return round(entry_price - dist, 4)
+
     fixed_stop = entry_price * (1 - stop_loss_pct)
     ma_stop = ma20 * 0.99
     return round(max(fixed_stop, ma_stop), 4)
@@ -154,6 +172,7 @@ def get_strategy_state(
     trade_log: pd.DataFrame,
     account_history: pd.DataFrame,
     cfg: RiskConfig | None = None,
+    check_drawdown: bool = True,
 ) -> StrategyState:
     """
     根据交易记录和账户历史判断当前策略状态。
@@ -168,22 +187,28 @@ def get_strategy_state(
     if cfg is None:
         cfg = RiskConfig()
 
+    # 最大回撤是组合级风险，应优先于连续亏损降仓。
+    equity_col = None
+    for col in ("total_equity", "equity"):
+        if col in account_history.columns:
+            equity_col = col
+            break
+
+    if check_drawdown and not account_history.empty and equity_col:
+        equity = account_history[equity_col]
+        peak = equity.cummax()
+        drawdown = (equity - peak) / peak
+        current_dd = drawdown.iloc[-1]
+        if current_dd <= -cfg.max_drawdown_pause:
+            logger.warning(f"当前回撤 {current_dd:.1%}，暂停开仓")
+            return StrategyState.PAUSED
+
     # 连续亏损检查
     if not trade_log.empty:
         recent = trade_log["pnl_pct"].tail(cfg.consecutive_loss_halve)
         if len(recent) == cfg.consecutive_loss_halve and (recent < 0).all():
             logger.warning(f"连续 {cfg.consecutive_loss_halve} 笔亏损，降仓模式")
             return StrategyState.HALF
-
-    # 最大回撤检查
-    if not account_history.empty and "equity" in account_history.columns:
-        equity = account_history["equity"]
-        peak = equity.cummax()
-        drawdown = (equity - peak) / peak
-        max_dd = drawdown.min()
-        if max_dd <= -cfg.max_drawdown_pause:
-            logger.warning(f"最大回撤 {max_dd:.1%}，暂停开仓")
-            return StrategyState.PAUSED
 
     return StrategyState.NORMAL
 

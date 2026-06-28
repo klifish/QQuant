@@ -42,26 +42,23 @@ def rank_signals(
     rs_col = f"rel_strength_{rs_window}d"
     vol_col = f"vol_ratio_{vol_window}d"
 
-    # 归一化到 [0, 1]，缺失值用中位数填充
-    def minmax_norm(s: pd.Series) -> pd.Series:
-        s = s.fillna(s.median())
-        mn, mx = s.min(), s.max()
-        if mx == mn:
-            return pd.Series(0.5, index=s.index)
-        return (s - mn) / (mx - mn)
+    # 分位排名归一化到 [0, 1]：对极值稳健（min-max 会被单个爆表值压扁其余候选）。
+    # 缺失值给中位分 0.5，不参与排名拉伸。
+    def rank_norm(s: pd.Series) -> pd.Series:
+        return s.rank(pct=True, method="average").fillna(0.5)
 
     score = pd.Series(0.0, index=df.index)
 
     if rs_col in df.columns:
-        score += weights["rs"] * minmax_norm(df[rs_col])
+        score += weights["rs"] * rank_norm(df[rs_col])
 
     if vol_col in df.columns:
-        score += weights["vol"] * minmax_norm(df[vol_col])
+        score += weights["vol"] * rank_norm(df[vol_col])
 
     # 均线斜率强度：用 (close - ma20) / ma20 代表距离快线的强度
     if "close_qfq" in df.columns and "ma20" in df.columns:
         ma_dist = (df["close_qfq"] - df["ma20"]) / df["ma20"]
-        score += weights["ma"] * minmax_norm(ma_dist)
+        score += weights["ma"] * rank_norm(ma_dist)
 
     df["score"] = score.round(4)
     df = df.sort_values("score", ascending=False).head(top_n)

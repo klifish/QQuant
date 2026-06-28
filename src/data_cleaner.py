@@ -24,8 +24,9 @@ def apply_qfq(df: pd.DataFrame) -> pd.DataFrame:
     对单只股票的日线 DataFrame 做前复权。
 
     前复权逻辑：
-      adj_close = close × (最新复权因子 / 当日复权因子)
-    以最新一天的复权因子为基准（= 1.0），历史价格向前调整。
+      adj_close = close × (当日复权因子 / 最新复权因子)
+    以最新一天的复权因子为基准（最新日 ratio=1，qfq=原始价），历史价格向前缩放，
+    确保跨送转/分红时价格连续——切勿写反，否则跨除权持仓会凭空产生巨亏/巨盈。
 
     参数 df 需含列：open, high, low, close, pre_close, adj_factor
     返回新增 open_qfq, high_qfq, low_qfq, close_qfq 列的 DataFrame。
@@ -39,7 +40,7 @@ def apply_qfq(df: pd.DataFrame) -> pd.DataFrame:
     # 最新复权因子（按 trade_date 排序后取最后一行）
     df = df.sort_values("trade_date")
     latest_factor = df["adj_factor"].iloc[-1]
-    ratio = latest_factor / df["adj_factor"]
+    ratio = df["adj_factor"] / latest_factor
 
     for raw_col in ("open", "high", "low", "close"):
         df[f"{raw_col}_qfq"] = (df[raw_col] * ratio).round(4)
@@ -83,7 +84,11 @@ def mark_suspend(conn: sqlite3.Connection) -> int:
     用成交量推算停牌：vol = 0 视为停牌（无需 suspend_d 接口，仅需 120 积分）。
 
     注：Tushare daily 接口对全天停牌通常不返回数据行，所以缺失日期即停牌。
-    此函数捕捉"有价格记录但成交量为零"的部分停牌场景。
+    此函数本想捕捉"有价格记录但成交量为零"的部分停牌场景，但实测 Tushare
+    日线里 vol=0 / vol IS NULL 的行数为 0——停牌一律表现为整行缺失，从不出现
+    vol=0 的行。因此本函数恒命中 0 行、is_suspend 列实际恒为 0，仅作占位。
+    停牌在回测中由"当日无 K 线"分支处理（见 backtester._last_close_on_or_before
+    及买卖执行的缺行跳过逻辑），不依赖此列。
     """
     cursor = conn.execute(
         "UPDATE stock_daily SET is_suspend = 1 WHERE vol = 0 OR vol IS NULL"

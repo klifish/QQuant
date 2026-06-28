@@ -3,6 +3,7 @@ data/raw/
 data/processed/
 data/database.sqlite
 data/*.sqlite
+data/*.sqlite.local_backup_*
 data/*.sqlite-journal
 data/*.sqlite-wal
 data/*.sqlite-shm

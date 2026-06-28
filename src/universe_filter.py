@@ -6,7 +6,9 @@
   2. 上市超过 N 天（默认 365）
   3. 近 20 日平均成交额 > 阈值（默认 5000 万元）
   4. 当日未停牌
-  5. 当日非一字涨跌停
+
+注：涨跌停不在票池端过滤——能否成交属 T+1 执行问题，由回测成交端按
+    is_limit_up 判断，避免在票池端就剔除当日封板的强势突破股。
 """
 
 import sqlite3
@@ -33,7 +35,11 @@ def get_universe(
     返回：
         DataFrame，列包含 ts_code, name, industry, list_date
     """
-    # 1. 当日有行情且未停牌、未一字涨跌停、非 ST
+    # 1. 当日有行情、未停牌、非 ST
+    # 注意：不在此处过滤涨跌停。票池只代表「流动性合格的可选标的」，
+    # 而当日封板的强势突破股恰是本策略最想要的候选；能否成交是 T+1 的执行问题，
+    # 已在回测成交端按 is_limit_up 判断（封板买不进则跳过）。若在票池端就剔除
+    # T 日涨停股，会系统性丢掉最强信号、低估策略表现。
     daily_cond = pd.read_sql(
         """
         SELECT ts_code
@@ -41,8 +47,6 @@ def get_universe(
         WHERE trade_date = ?
           AND is_st = 0
           AND is_suspend = 0
-          AND is_limit_up = 0
-          AND is_limit_dn = 0
         """,
         conn,
         params=[date],

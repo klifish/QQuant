@@ -17,18 +17,21 @@ universe:
 strategy:
   ma_fast: 20          # 快线均线周期
   ma_slow: 60          # 慢线均线周期
-  breakout_window: 20  # 突破窗口（N日最高价）
+  breakout_window: 60  # 突破窗口（N日最高价），中期突破比20日噪声更低
   stop_loss_pct: 0.07  # 固定止损：亏损7%离场
   take_profit_pct: 0.15  # 盈利超过此比例后启动移动止损
   index_code: "399300.SZ"   # 大盘参考指数：沪深300
-  index_ma: 20              # 大盘均线周期
+  index_ma: 60              # 大盘均线周期
+  atr_window: 14            # ATR 周期
+  atr_mult: 2.5             # ATR 止损倍数（止损距离 = atr_mult×ATR，回撤优先自适应）
 
 risk:
-  max_position_pct: 0.15       # 单票最大仓位（账户总值的15%）
-  max_risk_per_trade: 0.01     # 单笔最大账户风险（1%）
-  max_total_exposure: 0.60     # 总仓位上限（60%）
+  max_position_pct: 0.08       # 单票最大仓位（账户总值的8%）
+  max_risk_per_trade: 0.005    # 单笔最大账户风险（0.5%）
+  max_total_exposure: 0.40     # 总仓位上限（40%）
   max_sector_pct: 0.30         # 同行业持仓上限（30%）
-  max_drawdown_pause: 0.10     # 最大回撤暂停线（10%）
+  max_drawdown_pause: 0.20     # 最大回撤暂停线（20%）
+  drawdown_pause_days: 60      # 回撤触发后暂停开仓的交易日数
   max_daily_loss: 0.02         # 单日最大亏损（2%）
   consecutive_loss_halve: 3    # 连续亏损N笔后新开仓减半
 
